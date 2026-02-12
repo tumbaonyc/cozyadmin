@@ -1,6 +1,6 @@
 # Hi, I'm Michael Valdes 👋
 
-IT Operations & Cloud Infrastructure Leader with 20+ years of hands-on Microsoft platform — including 8+ years in leadership roles. I'm passionate about building reliable, secure, and cost-efficient infrastructure at scale.
+I'm an IT Operations & Cloud Infrastructure Leader with 20+ years of hands-on Microsoft platform — including 8+ years in leadership roles. I'm passionate about building reliable, secure, and cost-efficient infrastructure at scale.
 
 ---
 
