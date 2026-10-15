@@ -1,0 +1,14 @@
+# CSV files
+*.csv
+*.tsv
+
+# Excel files
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.xltx
+*.xltm
+
+# Excel temp/lock files (created while a workbook is open)
+~$*
