@@ -143,9 +143,6 @@ $end   = New-Object datetime ($now.Year, $now.Month, $now.Day, $now.Hour, $now.M
 $start = $end.AddDays(-$Days)
 Write-Host ("Reading interactive sign-ins from {0:u} to {1:u} ..." -f $start, $end) -ForegroundColor Cyan
 
-$select    = 'id,createdDateTime,userId,userPrincipalName,userDisplayName,userType,appDisplayName,status,authenticationDetails'
-$useSelect = $true
-
 $stats       = @{}   # userId -> running totals
 $methodsSeen = @{}   # authenticationMethod string -> step count
 $events      = New-Object System.Collections.Generic.List[object]
@@ -162,26 +159,15 @@ for ($s = 0; $s -lt $sliceCount; $s++) {
     Write-Progress -Activity 'Reading sign-in logs' -Status ("{0:yyyy-MM-dd HH:mm} UTC  ({1} sign-ins read)" -f $from, $totalRead) `
         -PercentComplete (100 * $s / $sliceCount)
 
+    # No $select: the sign-ins endpoint rejects it in real tenants, so full objects are requested.
     $uri = "$beta/auditLogs/signIns?`$filter=$filter&`$top=1000"
-    if ($useSelect) { $uri += "&`$select=$select" }
 
     # Consecutive windows share one second ("le" this window's end, "ge" the next window's start), so
     # remember which sign-ins sat on that second and skip them when the next window returns them again.
     $nextBoundaryIds = New-Object 'System.Collections.Generic.HashSet[string]'
 
     while ($uri) {
-        try {
-            $page = Invoke-GraphGet $uri
-        } catch {
-            # If the service rejects $select, fall back to full objects once and carry on
-            if ($useSelect -and (Get-HttpStatus $_) -eq 400) {
-                Write-Warning 'The service rejected $select on sign-ins; retrying without it (slower, same result).'
-                $useSelect = $false
-                $uri = "$beta/auditLogs/signIns?`$filter=$filter&`$top=1000"
-                continue
-            }
-            throw
-        }
+        $page = Invoke-GraphGet $uri
 
         foreach ($si in @($page.value)) {
             $id = "$($si.id)"
