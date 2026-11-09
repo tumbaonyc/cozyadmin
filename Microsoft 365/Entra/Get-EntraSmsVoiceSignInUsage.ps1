@@ -6,12 +6,16 @@
 .DESCRIPTION
     Read-only. Walks the interactive sign-in logs (Microsoft Graph beta GET /auditLogs/signIns) for the
     last N days, reads the authenticationDetails of every sign-in, and counts per user how often each
-    kind of method was used: SMS, voice call, an authenticator app, or anything else.
+    kind of method was used: SMS, voice call, a passkey, an authenticator app, or anything else.
 
     It then joins the result with the user registration details report so you can tell two very
     different groups apart:
       * users whose phone is the only thing they have registered (they need to register something), and
       * users who already have an authenticator app or passkey registered and pick SMS/voice anyway.
+
+    The Phase1Candidate column is 'Yes' for users who used SMS/voice and had ZERO Authenticator-app or
+    passkey sign-ins in the window (the Phase 1 target list). Passkey sign-ins are counted separately so
+    users who sign in with a passkey are not mistaken for users who never use Authenticator.
 
     Output (in -OutputFolder):
       <stamp>_SmsVoice-Users.csv     one row per user who used SMS or voice in the window
@@ -28,11 +32,14 @@
 .PARAMETER SliceHours
     Size of each query window (1-24). Lower it if a busy tenant times out on a full day at a time.
 
-.PARAMETER SmsPattern / VoicePattern / AuthenticatorPattern
+.PARAMETER SmsPattern / VoicePattern / PasskeyPattern / AuthenticatorPattern
     Regexes matched against signIn.authenticationDetails[].authenticationMethod. The Graph reference
     lists the values as "SMS" and "Voice"; real logs commonly show longer strings such as
     "Text message" and "Phone call approval (Authentication phone)". The defaults cover both, and the
     Methods-Seen CSV shows every value found in YOUR tenant so you can confirm nothing was missed.
+    PasskeyPattern is checked BEFORE AuthenticatorPattern, so a passkey stored in Microsoft Authenticator
+    counts as a passkey. The exact passkey strings in the logs are not documented in the sources checked;
+    confirm them in Methods-Seen and widen the pattern if a passkey value shows up as 'Other'.
 
 .PARAMETER IncludeEvents
     Also export one row per SMS/voice authentication step. The detail column can contain a (masked)
@@ -72,6 +79,7 @@ param(
     [ValidateRange(1, 24)][int]$SliceHours = 24,
     [string]$SmsPattern           = '^(SMS|Text message)',
     [string]$VoicePattern         = '(Voice|Phone call)',
+    [string]$PasskeyPattern       = '(Passkey|FIDO|Windows Hello)',   # matches 'Fido Key' seen in Milrose logs
     [string]$AuthenticatorPattern = '(Authenticator|Mobile app|Passwordless phone sign-in)',
     [string]$TenantId,
     [switch]$IncludeEvents,
@@ -122,6 +130,7 @@ function Get-MethodCategory {
     if ([string]::IsNullOrWhiteSpace($Method)) { return $null }
     if ($Method -match $SmsPattern)           { return 'SMS' }
     if ($Method -match $VoicePattern)         { return 'Voice' }
+    if ($Method -match $PasskeyPattern)       { return 'Passkey' }        # before Authenticator on purpose
     if ($Method -match $AuthenticatorPattern) { return 'AuthenticatorApp' }
     if ($Method -match $ignorePattern)        { return $null }
     return 'Other'
@@ -204,6 +213,7 @@ for ($s = 0; $s -lt $sliceCount; $s++) {
                     Sms               = 0
                     Voice             = 0
                     Authenticator     = 0
+                    Passkey           = 0
                     Other             = 0
                     PhoneSucceeded    = 0
                     PhoneFailed       = 0
@@ -217,6 +227,7 @@ for ($s = 0; $s -lt $sliceCount; $s++) {
             if ($cats.ContainsKey('SMS'))              { $u.Sms++ }
             if ($cats.ContainsKey('Voice'))            { $u.Voice++ }
             if ($cats.ContainsKey('AuthenticatorApp')) { $u.Authenticator++ }
+            if ($cats.ContainsKey('Passkey'))          { $u.Passkey++ }
             if ($cats.ContainsKey('Other'))            { $u.Other++ }
 
             if ($phoneSteps.Count -gt 0) {
@@ -285,7 +296,7 @@ $rows = foreach ($u in $stats.Values) {
                elseif ($hasApp -or $hasPasskey) { 'Stronger method registered - still uses SMS/voice' }
                else                             { 'No authenticator app or passkey registered' }
 
-    $totalMfa = $phone + $u.Authenticator + $u.Other
+    $totalMfa = $phone + $u.Authenticator + $u.Passkey + $u.Other
     $topApps  = ($u.PhoneApps.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 3 |
                  ForEach-Object { "$($_.Key) ($($_.Value))" }) -join '; '
 
@@ -297,7 +308,9 @@ $rows = foreach ($u in $stats.Values) {
         SmsSignIns                = $u.Sms
         VoiceSignIns              = $u.Voice
         AuthenticatorAppSignIns   = $u.Authenticator
+        PasskeySignIns            = $u.Passkey
         OtherMethodSignIns        = $u.Other
+        Phase1Candidate           = if (($u.Authenticator + $u.Passkey) -eq 0) { 'Yes' } else { 'No' }
         PhoneSharePercent         = [int][Math]::Round(100 * $phone / $totalMfa, 0)
         PhoneSignInsSucceeded     = $u.PhoneSucceeded
         PhoneSignInsFailed        = $u.PhoneFailed
@@ -347,13 +360,15 @@ $methodRows | Format-Table -AutoSize | Out-Host
 Write-Host ("Users who signed in with SMS or voice: {0}" -f $rows.Count) -ForegroundColor Yellow
 if ($rows.Count -gt 0) {
     $rows | Group-Object Finding | Sort-Object Count -Descending | Select-Object Count, Name | Format-Table -AutoSize | Out-Host
+    $p1 = @($rows | Where-Object Phase1Candidate -eq 'Yes').Count
+    Write-Host ("Phase 1 candidates (SMS/voice used, no Authenticator-app or passkey sign-ins): {0}" -f $p1) -ForegroundColor Yellow
     Write-Host 'Heaviest SMS/voice users:' -ForegroundColor Cyan
     $rows | Select-Object -First 15 UserPrincipalName, SmsSignIns, VoiceSignIns, AuthenticatorAppSignIns,
-        PhoneSharePercent, Finding | Format-Table -AutoSize | Out-Host
+        PasskeySignIns, PhoneSharePercent, Phase1Candidate | Format-Table -AutoSize | Out-Host
 }
 
 if (@($methodRows | Where-Object ClassifiedAs -eq 'Other').Count -gt 0) {
-    Write-Host "Check the 'Other' rows above. If one of them is a phone method in your tenant, widen -SmsPattern or -VoicePattern and run again." -ForegroundColor DarkYellow
+    Write-Host "Check the 'Other' rows above. If one is a phone method, widen -SmsPattern or -VoicePattern; if one is a passkey, widen -PasskeyPattern; then run again." -ForegroundColor DarkYellow
 }
 if ($totalRead -eq 0) {
     Write-Warning 'No sign-ins were returned. Check the role you signed in with and your sign-in log retention.'
